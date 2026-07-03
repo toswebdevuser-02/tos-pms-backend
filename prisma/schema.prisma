@@ -1,14 +1,3 @@
-// Project Tracker — central PostgreSQL schema.
-//
-// Design: hybrid. Identity/relational data (members, users, projects,
-// project_members, attachments, project_status) gets real typed columns + FKs
-// so we get referential integrity and ON DELETE CASCADE. The variable
-// per-type item content (RFI/Query/Dispatch/WIP/QC/Timesheet/Task/Standard/
-// Scope/Meeting/Input) lives in a JSONB `data` column on one table per type —
-// preserving the existing flexible row shapes and original ids, so the REST
-// contract matches today's JSON store and attachments keep pointing at the
-// same (entity_type, entity_id) pairs.
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -19,21 +8,18 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-// ── Identity ────────────────────────────────────────────────────────────────
-
 model Member {
-  id         Int      @id @default(autoincrement())
-  name       String
-  email      String   @default("")
-  role       String   @default("Employee") // Company Admin | Manager | Team Lead | Employee
-  discipline String   @default("") // scopes Managers/Leads to a discipline
-  skills     Json     @default("[]") // self-reported skill set [{skill,category,level,years}]
-  status     String   @default("active") // active | left
-  leftDate   String   @default("") @map("left_date")
-  createdAt  DateTime @default(now()) @map("created_at")
-
-  user           User?
+  id             Int             @id @default(autoincrement())
+  name           String
+  email          String          @default("")
+  role           String          @default("Employee")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  discipline     String          @default("")
+  skills         Json            @default("[]")
+  leftDate       String          @default("") @map("left_date")
+  status         String          @default("active")
   projectMembers ProjectMember[]
+  user           User?
 
   @@map("members")
 }
@@ -42,67 +28,61 @@ model User {
   id           Int      @id @default(autoincrement())
   email        String   @unique
   passwordHash String   @map("password_hash")
-  role         String   @default("Member") // mirrors Member.role; server's source of truth for authz
+  role         String   @default("Member")
   mustReset    Boolean  @default(true) @map("must_reset")
   createdAt    DateTime @default(now()) @map("created_at")
-
-  memberId Int?    @unique @map("member_id")
-  member   Member? @relation(fields: [memberId], references: [id], onDelete: SetNull)
+  memberId     Int?     @unique @map("member_id")
+  member       Member?  @relation(fields: [memberId], references: [id])
 
   @@map("users")
 }
 
-// ── Projects & assignment ─────────────────────────────────────────────────────
-
 model Project {
-  id          Int      @id @default(autoincrement())
+  id          Int               @id @default(autoincrement())
   name        String
-  client      String   @default("")
-  location    String   @default("")
-  discipline  String   @default("")
-  quotedHours Float    @default(0) @map("quoted_hours")
-  startDate   String   @default("") @map("start_date")
-  endDate     String   @default("") @map("end_date")
-  archived    Boolean  @default(false)
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-  createdBy   String   @default("") @map("created_by")
-  updatedBy   String   @default("") @map("updated_by")
-  version     Int      @default(1)
-
-  members    ProjectMember[]
-  status     ProjectStatus?
-  rfis       Rfi[]
-  queries    Query[]
-  dispatches Dispatch[]
-  wipTasks   WipTask[]
-  qcItems    QcItem[]
-  timesheets Timesheet[]
-  tasks      Task[]
-  standards  Standard[]
-  scopes     Scope[]
-  meetings   Meeting[]
-  inputs      Input[]
-  feedback    ProjectFeedback[]
+  client      String            @default("")
+  location    String            @default("")
+  discipline  String            @default("")
+  quotedHours Float             @default(0) @map("quoted_hours")
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+  createdBy   String            @default("") @map("created_by")
+  updatedBy   String            @default("") @map("updated_by")
+  version     Int               @default(1)
+  endDate     String            @default("") @map("end_date")
+  startDate   String            @default("") @map("start_date")
+  archived    Boolean           @default(false)
   allocations Allocation[]
+  dispatches  Dispatch[]
+  inputs      Input[]
+  meetings    Meeting[]
+  feedback    ProjectFeedback[]
+  members     ProjectMember[]
+  status      ProjectStatus?
+  qcItems     QcItem[]
+  queries     Query[]
+  rfis        Rfi[]
+  scopes      Scope[]
+  standards   Standard[]
+  tasks       Task[]
+  timesheets  Timesheet[]
+  wipTasks    WipTask[]
 
   @@map("projects")
 }
 
 model ProjectMember {
-  id        Int @id @default(autoincrement())
-  projectId Int @map("project_id")
-  memberId  Int @map("member_id")
-
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  member  Member  @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  id        Int     @id @default(autoincrement())
+  projectId Int     @map("project_id")
+  memberId  Int     @map("member_id")
+  member    Member  @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([projectId, memberId])
   @@index([projectId])
   @@map("project_members")
 }
 
-// Singleton per project (the app upserts one status row per project).
 model ProjectStatus {
   id          Int      @id @default(autoincrement())
   projectId   Int      @unique @map("project_id")
@@ -112,14 +92,10 @@ model ProjectStatus {
   createdBy   String   @default("") @map("created_by")
   updatedBy   String   @default("") @map("updated_by")
   version     Int      @default(1)
-
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@map("project_status")
 }
-
-// ── Item tables (hybrid: relational key columns + JSONB data) ─────────────────
-// All share the same shape; one per type to preserve original id spaces.
 
 model Rfi {
   id        Int      @id @default(autoincrement())
@@ -301,8 +277,6 @@ model ProjectFeedback {
   @@map("project_feedback")
 }
 
-// Daily work allocation: a manager plans which task/project a member works on
-// each day. data = { member_id, task_id?, date, hours?, note }.
 model Allocation {
   id        Int      @id @default(autoincrement())
   projectId Int      @map("project_id")
@@ -318,10 +292,6 @@ model Allocation {
   @@map("allocations")
 }
 
-// ── Attachments ───────────────────────────────────────────────────────────────
-// entity_type matches the item `type` string (rfi, query, qc, standard, ...).
-// Kept generic (no DB FK to a single table) since it points at many item types.
-
 model Attachment {
   id          Int      @id @default(autoincrement())
   entityType  String   @map("entity_type")
@@ -330,18 +300,16 @@ model Attachment {
   storedPath  String   @map("stored_path")
   description String   @default("")
   response    String   @default("")
-  importance  String   @default("Medium") // High | Medium | Low
+  importance  String   @default("Medium")
   createdAt   DateTime @default(now()) @map("created_at")
 
   @@index([entityType, entityId])
   @@map("attachments")
 }
 
-// ── App settings (single row) ─────────────────────────────────────────────────
-
 model AppSetting {
-  id   Int    @id @default(1)
-  data Json   @default("{}") // smtp config etc.
+  id   Int  @id @default(1)
+  data Json @default("{}")
 
   @@map("app_settings")
 }
