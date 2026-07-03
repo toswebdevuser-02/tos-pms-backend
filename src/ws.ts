@@ -11,7 +11,7 @@ import jwt from 'jsonwebtoken'
 import { env } from './env'
 
 export interface ChangeEvent {
-  entity: 'project' | 'status' | 'item' | 'member' | 'projectMember' | 'attachment'
+  entity: 'project' | 'status' | 'item' | 'member' | 'projectMember' | 'attachment' | 'quote' | 'client'
   action: 'create' | 'update' | 'delete'
   type?: string // item type (rfi, query, …) when entity === 'item'
   projectId?: number

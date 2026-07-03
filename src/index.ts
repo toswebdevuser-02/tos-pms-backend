@@ -7,6 +7,8 @@ import { prisma } from './prisma'
 import { buildRouter } from './routes'
 import { buildAuthRouter, authRequired } from './auth'
 import { initWebSocket } from './ws'
+import { runDigestTick } from './digest'
+import { projectsPurgeExpired } from './store'
 
 const app = express()
 app.use(cors())
@@ -44,6 +46,24 @@ server.listen(env.port, () => {
   // eslint-disable-next-line no-console
   console.log(`Project Tracker server listening on http://0.0.0.0:${env.port}`)
 })
+
+// Scheduled weekly/daily digest: check every 15 minutes (plus once shortly
+// after startup). runDigestTick() self-guards on the configured schedule and a
+// per-day "already sent" marker, so repeated checks are safe.
+setInterval(() => { void runDigestTick() }, 15 * 60 * 1000)
+setTimeout(() => { void runDigestTick() }, 15000)
+
+// Recycle bin auto-purge: permanently delete projects soft-deleted > 15 days ago.
+// Hourly check (plus once shortly after startup).
+const purgeExpired = async (): Promise<void> => {
+  try {
+    const n = await projectsPurgeExpired(15)
+    // eslint-disable-next-line no-console
+    if (n > 0) console.log(`Recycle bin: purged ${n} expired project(s)`)
+  } catch (e) { /* eslint-disable-next-line no-console */ console.error('purgeExpired failed', e) }
+}
+setInterval(() => { void purgeExpired() }, 60 * 60 * 1000)
+setTimeout(() => { void purgeExpired() }, 30000)
 
 async function shutdown(): Promise<void> {
   await prisma.$disconnect()

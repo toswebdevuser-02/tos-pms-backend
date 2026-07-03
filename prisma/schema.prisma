@@ -14,9 +14,8 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 // ── Identity ────────────────────────────────────────────────────────────────
@@ -27,15 +26,35 @@ model Member {
   email      String   @default("")
   role       String   @default("Employee") // Company Admin | Manager | Team Lead | Employee
   discipline String   @default("") // scopes Managers/Leads to a discipline
+  engagement String   @default("") // "" = unset | Man-month | Miscellaneous
   skills     Json     @default("[]") // self-reported skill set [{skill,category,level,years}]
   status     String   @default("active") // active | left
   leftDate   String   @default("") @map("left_date")
   createdAt  DateTime @default(now()) @map("created_at")
 
-  user           User?
-  projectMembers ProjectMember[]
+  user             User?
+  projectMembers   ProjectMember[]
+  overtimeRequests OvertimeRequest[]
 
   @@map("members")
+}
+
+// Per-member, per-day overtime request. Approved hours extend that day's 8.5h
+// task-allocation capacity; pending/rejected do not count.
+model OvertimeRequest {
+  id          Int      @id @default(autoincrement())
+  memberId    Int      @map("member_id")
+  date        String   // YYYY-MM-DD
+  hours       Float    @default(0)
+  status      String   @default("pending") // pending | approved | rejected
+  reason      String   @default("")
+  requestedAt DateTime @default(now()) @map("requested_at")
+  decidedBy   String   @default("") @map("decided_by")
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId])
+  @@map("overtime_requests")
 }
 
 model User {
@@ -60,16 +79,20 @@ model Project {
   client      String   @default("")
   location    String   @default("")
   discipline  String   @default("")
+  type        String   @default("") // "" = standard | Man-month | Miscellaneous
   quotedHours Float    @default(0) @map("quoted_hours")
   startDate   String   @default("") @map("start_date")
   endDate     String   @default("") @map("end_date")
   archived    Boolean  @default(false)
+  deletedAt   DateTime? @map("deleted_at") // soft-delete: in the recycle bin; purged 15 days later
+  clientId    Int?     @map("client_id") // link to the Client registry (name kept denormalized in `client`)
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
   createdBy   String   @default("") @map("created_by")
   updatedBy   String   @default("") @map("updated_by")
   version     Int      @default(1)
 
+  clientRef  Client?        @relation(fields: [clientId], references: [id], onDelete: SetNull)
   members    ProjectMember[]
   status     ProjectStatus?
   rfis       Rfi[]
@@ -316,6 +339,43 @@ model Allocation {
 
   @@index([projectId])
   @@map("allocations")
+}
+
+// Client registry — one record per client, reused across all their projects to
+// avoid duplicating client info. `code` is a human-readable unique id (CL-0001).
+model Client {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique
+  name      String   @unique
+  company   String   @default("")
+  contact   String   @default("") // legacy (no longer edited in the UI)
+  email     String   @default("") // legacy
+  phone     String   @default("") // legacy
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdBy String   @default("") @map("created_by")
+  updatedBy String   @default("") @map("updated_by")
+  version   Int      @default(1)
+
+  projects  Project[]
+
+  @@map("clients")
+}
+
+// Standalone project quotation (created before a project exists, for prospects).
+// Follows the company's fixed BIM scope-and-hours template; all template fields
+// live in `data` JSON (quote_no, date, client_name, project_name, project_hours,
+// qc_hours + detailed scope of work). Not linked to a Project on purpose.
+model Quote {
+  id        Int      @id @default(autoincrement())
+  data      Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdBy String   @default("") @map("created_by")
+  updatedBy String   @default("") @map("updated_by")
+  version   Int      @default(1)
+
+  @@map("quotes")
 }
 
 // ── Attachments ───────────────────────────────────────────────────────────────

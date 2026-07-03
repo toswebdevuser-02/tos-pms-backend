@@ -38,9 +38,10 @@ declare global {
 // Legacy 'Admin' = Team Lead, 'Member' = Employee.
 const ROLE_RANK: Record<string, number> = {
   Employee: 1, Member: 1,
-  'Team Lead': 2, Admin: 2,
-  Manager: 3,
-  'Company Admin': 4
+  'Project Lead': 2,
+  'Team Lead': 3, Admin: 3,
+  Manager: 4,
+  'Company Admin': 5
 }
 export function rankOf(role: string): number {
   return ROLE_RANK[role] ?? 0
@@ -50,18 +51,40 @@ function sign(u: AuthUser): string {
   return jwt.sign(u, env.jwtSecret, { expiresIn: env.jwtExpiresIn as jwt.SignOptions['expiresIn'] })
 }
 
-export function authRequired(req: Request, res: Response, next: NextFunction): void {
+export async function authRequired(req: Request, res: Response, next: NextFunction): Promise<void> {
   const header = req.header('authorization') ?? ''
   const token = header.startsWith('Bearer ') ? header.slice(7) : ''
   if (!token) {
     res.status(401).json({ ok: false, error: 'Not authenticated' })
     return
   }
+  let decoded: AuthUser
   try {
-    req.user = jwt.verify(token, env.jwtSecret) as AuthUser
-    next()
+    decoded = jwt.verify(token, env.jwtSecret) as AuthUser
   } catch {
     res.status(401).json({ ok: false, error: 'Session expired — please sign in again' })
+    return
+  }
+  // Re-read identity + role from the DB on every request so a role/discipline
+  // change (made in the Members list) takes effect on the next page load — no
+  // re-login required. The token is only used to identify the user, not to
+  // carry their (possibly stale) role.
+  try {
+    const user = await prisma.user.findUnique({ where: { id: decoded.uid }, include: { member: true } })
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'Account no longer exists' })
+      return
+    }
+    req.user = {
+      uid: user.id,
+      mid: user.memberId,
+      role: user.member?.role ?? user.role,
+      name: user.member?.name ?? decoded.name ?? decoded.email,
+      email: decoded.email
+    }
+    next()
+  } catch {
+    res.status(500).json({ ok: false, error: 'Authentication lookup failed' })
   }
 }
 
@@ -88,8 +111,10 @@ export function buildAuthRouter(): Router {
         res.status(401).json({ ok: false, error: 'Invalid email or password' })
         return
       }
+      // The member record's role is the source of truth (managed in the members
+      // UI). user.role can lag behind, so authorize by the member's role.
       const authUser: AuthUser = {
-        uid: user.id, mid: user.memberId, role: user.role,
+        uid: user.id, mid: user.memberId, role: user.member?.role ?? user.role,
         name: user.member?.name ?? email, email
       }
       res.json({ ok: true, data: { token: sign(authUser), user: authUser, mustReset: user.mustReset } })
@@ -112,7 +137,7 @@ export function buildAuthRouter(): Router {
       }
       const user = await prisma.user.findUnique({ where: { id: req.user!.uid } })
       if (!user || !(await bcrypt.compare(current, user.passwordHash))) {
-        res.status(401).json({ ok: false, error: 'Current password is incorrect' })
+        res.status(400).json({ ok: false, error: 'Current password is incorrect' })
         return
       }
       await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(next, 10), mustReset: false } })
