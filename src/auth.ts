@@ -126,10 +126,6 @@ export function buildAuthRouter(): Router {
   r.post('/users', authRequired, requireRole('Company Admin'), async (req, res) => {
     try {
       const memberId = parseInt(String(req.body.memberId), 10)
-      if (isNaN(memberId)) {
-        res.status(400).json({ ok: false, error: 'Invalid member ID' })
-        return
-      }
       const password = String(req.body.password ?? '')
       const member = await prisma.member.findUnique({ where: { id: memberId } })
       if (!member || !member.email) {

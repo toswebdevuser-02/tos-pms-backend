@@ -193,7 +193,7 @@ export function buildRouter(): Router {
   // ── Members (Company Admin manages) ──────────────────────────────────────────
   r.get('/members', (_req, res) => send(res, () => store.membersGetAll()))
   r.get('/members/:id', (req, res) => send(res, () => store.memberById(int(req.params.id))))
-  r.post('/members', requireRole('Company Admin'), (req, res) => send(res, async () => { const id = await store.memberCreate(req.body.name, req.body.email, req.body.role, req.body.discipline); return { id } }, { entity: 'member', action: 'create' }))
+  r.post('/members', requireRole('Company Admin'), (req, res) => send(res, async () => ({ id: await store.memberCreate(req.body.name, req.body.email, req.body.role, req.body.discipline) }), { entity: 'member', action: 'create' }))
   r.put('/members/:id', requireRole('Company Admin'), (req, res) => send(res, async () => { await store.memberUpdate(int(req.params.id), req.body.name, req.body.email, req.body.role, req.body.discipline); return { id: int(req.params.id) } }, { entity: 'member', action: 'update' }))
   r.delete('/members/:id', requireRole('Company Admin'), (req, res) => send(res, async () => { await store.memberDelete(int(req.params.id)); return { id: int(req.params.id) } }, { entity: 'member', action: 'delete' }))
   r.put('/members/:id/active', requireRole('Company Admin'), (req, res) => send(res, async () => { await store.memberSetActive(int(req.params.id), !!req.body.active); return { id: int(req.params.id) } }, { entity: 'member', action: 'update' }))
@@ -211,7 +211,7 @@ export function buildRouter(): Router {
   // ── Project ↔ member (Company Admin assigns) ─────────────────────────────────
   r.get('/project-members', (_req, res) => send(res, () => store.projectMembersAll()))
   r.get('/project-members/:projectId', (req, res) => send(res, () => store.projectMembersGet(int(req.params.projectId))))
-  r.post('/project-members', requireRole('Admin'), (req, res) => send(res, async () => { await store.projectMemberAssign(int(req.body.projectId), int(req.body.memberId)); return {} }, { entity: 'projectMember', action: 'create', projectId: int(req.body.projectId) }))
+  r.post('/project-members', requireRole('Company Admin'), (req, res) => send(res, async () => { await store.projectMemberAssign(int(req.body.projectId), int(req.body.memberId)); return {} }, { entity: 'projectMember', action: 'create', projectId: int(req.body.projectId) }))
   r.delete('/project-members', requireRole('Company Admin'), (req, res) => send(res, async () => { await store.projectMemberUnassign(int(req.body.projectId), int(req.body.memberId)); return {} }, { entity: 'projectMember', action: 'delete', projectId: int(req.body.projectId) }))
 
   // ── Settings (Admin+ for shared SMTP etc.) ───────────────────────────────────
