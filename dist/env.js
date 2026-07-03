@@ -17,7 +17,7 @@ function required(name, fallback) {
 exports.env = {
     databaseUrl: required('DATABASE_URL', ''),
     jwtSecret: required('JWT_SECRET', 'dev-insecure-secret-change-me'),
-    jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '12h',
+    jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '7d',
     port: parseInt(process.env.PORT ?? '4000', 10),
     storageDir: path_1.default.resolve(process.env.STORAGE_DIR ?? './storage/attachments'),
     legacyDataJson: process.env.LEGACY_DATA_JSON ?? '../../data.json'

@@ -55,6 +55,7 @@ const env_1 = require("./env");
 const auth_1 = require("./auth");
 const tables_1 = require("./tables");
 const ws_1 = require("./ws");
+const email_1 = require("./email");
 const upload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
 // Resolve a stored_path safely under STORAGE_DIR (block traversal / absolute paths).
 function safeStoragePath(rel) {
@@ -84,35 +85,14 @@ async function itemProjectId(type, id) {
 const itemEntity = (type) => (type === 'status' ? 'status' : 'item');
 // Project writes: Manager+ required; Managers are scoped to their own discipline,
 // Company Admin may act on any project.
-async function projectGuard(req, res, next) {
+function projectGuard(req, res, next) {
+    // Project Lead and above may create/edit/delete any project (no discipline restriction).
     const r = (0, auth_1.rankOf)(req.user?.role ?? '');
-    if (r < (0, auth_1.rankOf)('Manager')) {
-        res.status(403).json({ ok: false, error: 'Requires Manager role' });
+    if (r < (0, auth_1.rankOf)('Project Lead')) {
+        res.status(403).json({ ok: false, error: 'Requires Project Lead role or above' });
         return;
     }
-    if (r >= (0, auth_1.rankOf)('Company Admin')) {
-        next();
-        return;
-    }
-    try {
-        const me = req.user?.mid ? await prisma_1.prisma.member.findUnique({ where: { id: req.user.mid } }) : null;
-        const myDisc = me?.discipline ?? '';
-        let targetDisc = '';
-        if (req.method === 'POST')
-            targetDisc = String(req.body.discipline ?? '');
-        else {
-            const p = await prisma_1.prisma.project.findUnique({ where: { id: int(req.params.id) }, select: { discipline: true } });
-            targetDisc = p?.discipline ?? '';
-        }
-        if (!myDisc || myDisc !== targetDisc) {
-            res.status(403).json({ ok: false, error: 'Managers can only manage projects in their own discipline' });
-            return;
-        }
-        next();
-    }
-    catch (e) {
-        res.status(400).json({ ok: false, error: String(e) });
-    }
+    next();
 }
 // Actor name for audit stamping — from the verified token, not the client.
 function actorOf(req) {
@@ -129,11 +109,11 @@ async function itemData(type, id) {
     return row ? row.data : undefined;
 }
 // Per-type authorization for item writes. Mirrors the app's UI rules:
-// - standard/dispatch/wip : Admin+ for all writes
+// - standard/dispatch/wip/scope/meeting/input/status : Team Lead+ for all writes (project setup)
 // - qc                    : Admin+ to create/delete; any member may update (result)
 // - task                  : Admin+ to create/delete; assigned member (or admin) may update
 // - timesheet             : a member may only write their OWN rows; admins any
-// - rfi/query/scope/meeting/input/status : any authenticated user
+// - rfi/query             : any authenticated user
 async function itemWriteGuard(req, res, next) {
     const type = String(req.params.type);
     const method = req.method;
@@ -141,20 +121,23 @@ async function itemWriteGuard(req, res, next) {
     const mid = req.user?.mid ?? null;
     const deny = (msg) => { res.status(403).json({ ok: false, error: msg }); };
     try {
-        if (['standard', 'dispatch', 'wip', 'feedback', 'allocation'].includes(type)) {
+        if (['standard', 'dispatch', 'wip', 'feedback', 'allocation', 'scope', 'meeting', 'input', 'status'].includes(type)) {
             if (!admin)
                 return deny('Only Team Leads, Managers and admins can modify this section');
             return next();
         }
         if (type === 'qc') {
             if ((method === 'POST' || method === 'DELETE') && !admin)
-                return deny('Only admins can add or remove QC entries');
+                return deny('Only admins can add or remove QA/QC entries');
             return next();
         }
         if (type === 'task') {
-            if ((method === 'POST' || method === 'DELETE') && !admin)
-                return deny('Only admins can create or delete tasks');
-            if (method === 'PUT' && !admin) {
+            // Project Lead and above may create/delete/manage any task; an assignee may
+            // update their own. (Matches the frontend isAdmin = Project Lead+ task tools.)
+            const taskManager = (0, auth_1.rankOf)(req.user?.role ?? '') >= (0, auth_1.rankOf)('Project Lead');
+            if ((method === 'POST' || method === 'DELETE') && !taskManager)
+                return deny('Only Project Leads and above can create or delete tasks');
+            if (method === 'PUT' && !taskManager) {
                 const data = await itemData('task', int(req.params.id));
                 if (!data || String(data.assigned_member_id ?? '') !== String(mid ?? '')) {
                     return deny('Only the assigned member can update this task');
@@ -186,15 +169,28 @@ function buildRouter() {
     const r = (0, express_1.Router)();
     // ── Projects (Company Admin manages) ──────────────────────────────────────--
     r.get('/projects', (_req, res) => send(res, () => store.projectsGetAll()));
+    // Recycle bin — declared before '/projects/:id' so "deleted" isn't read as an id.
+    r.get('/projects/deleted', projectGuard, (_req, res) => send(res, () => store.projectsDeleted()));
     r.get('/projects/:id', (req, res) => send(res, () => store.projectById(int(req.params.id))));
     r.post('/projects', projectGuard, (req, res) => {
-        const { name, client, location, discipline, quoted_hours, start_date, end_date } = req.body;
-        send(res, async () => ({ id: await store.projectCreate(name, client, location, discipline, String(quoted_hours ?? ''), String(start_date ?? ''), String(end_date ?? ''), actorOf(req)) }), (d) => ({ entity: 'project', action: 'create', projectId: d.id }));
+        const { name, client, location, discipline, type, quoted_hours, start_date, end_date, client_id } = req.body;
+        send(res, async () => {
+            const id = await store.projectCreate(name, client, location, discipline, String(quoted_hours ?? ''), String(start_date ?? ''), String(end_date ?? ''), actorOf(req), String(type ?? ''), client_id == null ? null : Number(client_id));
+            // Auto-assign the creator so they can see/manage the project they just made.
+            // (Team Lead and above already see all projects; this matters for Project Leads.)
+            if (req.user?.mid && (0, auth_1.rankOf)(req.user.role) < (0, auth_1.rankOf)('Team Lead')) {
+                try {
+                    await store.projectMemberAssign(id, req.user.mid);
+                }
+                catch { /* non-fatal */ }
+            }
+            return { id };
+        }, (d) => ({ entity: 'project', action: 'create', projectId: d.id }));
     });
     r.put('/projects/:id', projectGuard, (req, res) => {
-        const { name, client, location, discipline, quoted_hours, start_date, end_date } = req.body;
+        const { name, client, location, discipline, type, quoted_hours, start_date, end_date, client_id } = req.body;
         send(res, async () => {
-            await store.projectUpdate(int(req.params.id), name, client, location, discipline, String(quoted_hours ?? ''), String(start_date ?? ''), String(end_date ?? ''), actorOf(req));
+            await store.projectUpdate(int(req.params.id), name, client, location, discipline, String(quoted_hours ?? ''), String(start_date ?? ''), String(end_date ?? ''), actorOf(req), String(type ?? ''), client_id === undefined ? undefined : (client_id == null ? null : Number(client_id)));
             return { id: int(req.params.id) };
         }, { entity: 'project', action: 'update', projectId: int(req.params.id) });
     });
@@ -205,12 +201,19 @@ function buildRouter() {
             return { id: int(req.params.id) };
         }, { entity: 'project', action: 'update', projectId: int(req.params.id) });
     });
-    r.delete('/projects/:id', projectGuard, (req, res) => send(res, async () => { await store.projectDelete(int(req.params.id)); return { id: int(req.params.id) }; }, { entity: 'project', action: 'delete', projectId: int(req.params.id) }));
+    // Delete → recycle bin (soft delete; restorable for 15 days).
+    r.delete('/projects/:id', projectGuard, (req, res) => send(res, async () => { await store.projectSoftDelete(int(req.params.id), actorOf(req)); return { id: int(req.params.id) }; }, { entity: 'project', action: 'delete', projectId: int(req.params.id) }));
+    r.post('/projects/:id/restore', projectGuard, (req, res) => send(res, async () => { await store.projectRestore(int(req.params.id), actorOf(req)); return { id: int(req.params.id) }; }, { entity: 'project', action: 'update', projectId: int(req.params.id) }));
+    // Permanent deletion (Company Admin only).
+    r.delete('/projects/:id/purge', (0, auth_1.requireRole)('Company Admin'), (req, res) => send(res, async () => { await store.projectPurge(int(req.params.id)); return { id: int(req.params.id) }; }, { entity: 'project', action: 'delete', projectId: int(req.params.id) }));
     r.get('/statuses', (_req, res) => send(res, () => store.statusesGetAll()));
     // ── Cross-cutting (reminders) ────────────────────────────────────────────────
     r.get('/all/wip', (_req, res) => send(res, () => store.allOpenWip()));
     r.get('/all/dispatches', (_req, res) => send(res, () => store.allDispatches()));
     r.get('/all/tasks', (_req, res) => send(res, () => store.allTasks()));
+    r.get('/all/timesheets', (_req, res) => send(res, () => store.allTimesheets()));
+    r.get('/all/qc', (_req, res) => send(res, () => store.allQc()));
+    r.get('/all/rfi', (_req, res) => send(res, () => store.allRfis()));
     // ── Items ─────────────────────────────────────────────────────────────────--
     r.get('/items/:type', (req, res) => send(res, () => store.itemsGetByProject(int(req.query.projectId), String(req.params.type))));
     r.post('/items/:type', itemWriteGuard, (req, res) => {
@@ -233,8 +236,8 @@ function buildRouter() {
     // ── Members (Company Admin manages) ──────────────────────────────────────────
     r.get('/members', (_req, res) => send(res, () => store.membersGetAll()));
     r.get('/members/:id', (req, res) => send(res, () => store.memberById(int(req.params.id))));
-    r.post('/members', (0, auth_1.requireRole)('Company Admin'), (req, res) => send(res, async () => ({ id: await store.memberCreate(req.body.name, req.body.email, req.body.role, req.body.discipline) }), { entity: 'member', action: 'create' }));
-    r.put('/members/:id', (0, auth_1.requireRole)('Company Admin'), (req, res) => send(res, async () => { await store.memberUpdate(int(req.params.id), req.body.name, req.body.email, req.body.role, req.body.discipline); return { id: int(req.params.id) }; }, { entity: 'member', action: 'update' }));
+    r.post('/members', (0, auth_1.requireRole)('Company Admin'), (req, res) => send(res, async () => ({ id: await store.memberCreate(req.body.name, req.body.email, req.body.role, req.body.discipline, req.body.engagement) }), { entity: 'member', action: 'create' }));
+    r.put('/members/:id', (0, auth_1.requireRole)('Company Admin'), (req, res) => send(res, async () => { await store.memberUpdate(int(req.params.id), req.body.name, req.body.email, req.body.role, req.body.discipline, req.body.engagement); return { id: int(req.params.id) }; }, { entity: 'member', action: 'update' }));
     r.delete('/members/:id', (0, auth_1.requireRole)('Company Admin'), (req, res) => send(res, async () => { await store.memberDelete(int(req.params.id)); return { id: int(req.params.id) }; }, { entity: 'member', action: 'delete' }));
     r.put('/members/:id/active', (0, auth_1.requireRole)('Company Admin'), (req, res) => send(res, async () => { await store.memberSetActive(int(req.params.id), !!req.body.active); return { id: int(req.params.id) }; }, { entity: 'member', action: 'update' }));
     // Skills: editable by the member themselves or a Company Admin.
@@ -250,11 +253,77 @@ function buildRouter() {
     // ── Project ↔ member (Company Admin assigns) ─────────────────────────────────
     r.get('/project-members', (_req, res) => send(res, () => store.projectMembersAll()));
     r.get('/project-members/:projectId', (req, res) => send(res, () => store.projectMembersGet(int(req.params.projectId))));
-    r.post('/project-members', (0, auth_1.requireRole)('Company Admin'), (req, res) => send(res, async () => { await store.projectMemberAssign(int(req.body.projectId), int(req.body.memberId)); return {}; }, { entity: 'projectMember', action: 'create', projectId: int(req.body.projectId) }));
-    r.delete('/project-members', (0, auth_1.requireRole)('Company Admin'), (req, res) => send(res, async () => { await store.projectMemberUnassign(int(req.body.projectId), int(req.body.memberId)); return {}; }, { entity: 'projectMember', action: 'delete', projectId: int(req.body.projectId) }));
+    r.post('/project-members', (0, auth_1.requireRole)('Admin'), (req, res) => send(res, async () => { await store.projectMemberAssign(int(req.body.projectId), int(req.body.memberId)); return {}; }, { entity: 'projectMember', action: 'create', projectId: int(req.body.projectId) }));
+    r.delete('/project-members', (0, auth_1.requireRole)('Admin'), (req, res) => send(res, async () => { await store.projectMemberUnassign(int(req.body.projectId), int(req.body.memberId)); return {}; }, { entity: 'projectMember', action: 'delete', projectId: int(req.body.projectId) }));
+    // ── Overtime requests ────────────────────────────────────────────────────────
+    // Team Lead+ see all (to approve); everyone else sees their own. Anyone may
+    // request; only Team Lead+ may approve/reject.
+    r.get('/overtime', (req, res) => send(res, async () => ((0, auth_1.rankOf)(req.user?.role ?? '') >= (0, auth_1.rankOf)('Admin') ? store.overtimeAll() : store.overtimeForMember(req.user?.mid ?? -1))));
+    r.post('/overtime', (req, res) => send(res, async () => {
+        const mid = req.user?.mid;
+        if (!mid)
+            throw new Error('Your account has no member profile');
+        const id = await store.overtimeCreate(mid, String(req.body.date ?? ''), parseFloat(String(req.body.hours ?? '0')) || 0, String(req.body.reason ?? ''));
+        return { id };
+    }));
+    // Two-stage approval. Stage 1: Project Lead/Team Lead approves a 'pending' request
+    // → 'lead_approved'. Stage 2: a Manager+ approves that → 'approved' (only then do
+    // the hours reflect). Either stage may reject. Rank is enforced per stage.
+    r.put('/overtime/:id/decide', (req, res) => send(res, async () => {
+        const id = int(req.params.id);
+        const cur = await store.overtimeById(id);
+        if (!cur)
+            throw new Error('Overtime request not found');
+        const status = String(cur.status ?? 'pending');
+        const trail = String(cur.decided_by ?? '');
+        const actor = actorOf(req);
+        const t = store.overtimeTransition(status, String(req.body.decision ?? ''), (0, auth_1.rankOf)(req.user?.role ?? ''));
+        if ('error' in t)
+            throw new Error(t.error);
+        const by = t.tag === 'lead' ? `Lead: ${actor}`
+            : t.tag === 'mgr' ? `${trail ? trail + ' · ' : ''}Mgr: ${actor}`
+                : `${trail ? trail + ' · ' : ''}Rejected by ${actor}`;
+        await store.overtimeDecide(id, t.next, by);
+        return { id };
+    }));
+    // ── Quotes (Team Lead+ create/manage standalone quotations) ──────────────────
+    r.get('/quotes', (0, auth_1.requireRole)('Admin'), (_req, res) => send(res, () => store.quotesGetAll()));
+    r.post('/quotes', (0, auth_1.requireRole)('Admin'), (req, res) => send(res, async () => ({ id: await store.quoteCreate(req.body, actorOf(req)) }), { entity: 'quote', action: 'create' }));
+    r.put('/quotes/:id', (0, auth_1.requireRole)('Admin'), (req, res) => send(res, async () => { await store.quoteUpdate(int(req.params.id), req.body, actorOf(req)); return { id: int(req.params.id) }; }, { entity: 'quote', action: 'update' }));
+    r.delete('/quotes/:id', (0, auth_1.requireRole)('Admin'), (req, res) => send(res, async () => { await store.quoteDelete(int(req.params.id)); return { id: int(req.params.id) }; }, { entity: 'quote', action: 'delete' }));
+    // ── Clients (registry; any authed user reads/picks, Team Lead+ manages) ───────
+    r.get('/clients', (_req, res) => send(res, () => store.clientsGetAll()));
+    r.post('/clients', (0, auth_1.requireRole)('Admin'), (req, res) => send(res, async () => ({ id: await store.clientCreate(req.body, actorOf(req)) }), { entity: 'client', action: 'create' }));
+    r.put('/clients/:id', (0, auth_1.requireRole)('Admin'), (req, res) => send(res, async () => { await store.clientUpdate(int(req.params.id), req.body, actorOf(req)); return { id: int(req.params.id) }; }, { entity: 'client', action: 'update' }));
+    r.delete('/clients/:id', (0, auth_1.requireRole)('Admin'), (req, res) => send(res, async () => { await store.clientDelete(int(req.params.id)); return { id: int(req.params.id) }; }, { entity: 'client', action: 'delete' }));
     // ── Settings (Admin+ for shared SMTP etc.) ───────────────────────────────────
-    r.get('/settings', (_req, res) => send(res, () => store.getSettings()));
-    r.put('/settings', (0, auth_1.requireRole)('Admin'), (req, res) => send(res, () => store.updateSettings(req.body)));
+    r.get('/settings', (req, res) => send(res, async () => {
+        const s = await store.getSettings();
+        const smtp = (s.smtp ?? {});
+        const digest = (s.digest ?? {});
+        // Email/SMTP + digest config is Company-Admin-only. Non-admins get just what
+        // the app needs (current member) with the mail config hidden. The SMTP
+        // password is never returned to anyone (only whether one is set).
+        if ((0, auth_1.rankOf)(req.user?.role ?? '') < (0, auth_1.rankOf)('Company Admin')) {
+            return { current_member_id: s.current_member_id, smtp: {}, digest: { enabled: !!digest.enabled } };
+        }
+        return { ...s, smtp: { ...smtp, pass: '', hasPass: !!smtp.pass } };
+    }));
+    r.put('/settings', (0, auth_1.requireRole)('Company Admin'), (req, res) => send(res, () => {
+        const patch = (req.body ?? {});
+        const smtp = patch.smtp;
+        // A blank password means "keep the current one" — drop it so the merge preserves it.
+        if (smtp && (smtp.pass === '' || smtp.pass == null)) {
+            const { pass, ...rest } = smtp;
+            patch.smtp = rest;
+        }
+        return store.updateSettings(patch);
+    }));
+    // ── Email (SMTP from settings) ────────────────────────────────────────────--
+    // Testing the SMTP config is Company-Admin-only; sending (reminders/digests)
+    // stays open to Team Lead+ since they never see the credentials.
+    r.post('/email/test', (0, auth_1.requireRole)('Company Admin'), async (_req, res) => { res.json(await (0, email_1.emailTest)()); });
+    r.post('/email/send', (0, auth_1.requireRole)('Admin'), async (req, res) => { res.json(await (0, email_1.emailSend)(req.body)); });
     // ── Attachments ──────────────────────────────────────────────────────────────
     r.get('/attachments/many', (req, res) => {
         const ids = String(req.query.ids ?? '').split(',').filter(Boolean).map((s) => int(s));
