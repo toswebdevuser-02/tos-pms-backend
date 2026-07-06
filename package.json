@@ -5,14 +5,15 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "prisma generate && tsc",
-    "start": "prisma migrate deploy && node dist/index.js",
+    "build": "tsc",
+    "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "migrate:json": "tsx src/migrate-from-json.ts",
     "migrate:attach": "tsx src/migrate-attachments.ts",
-    "seed:admin": "tsx src/seed-admin.ts"
+    "seed:admin": "tsx src/seed-admin.ts",
+    "add:member": "tsx src/add-member.ts"
   },
   "author": "Tesla Outsourcing Services",
   "license": "ISC",
@@ -21,11 +22,10 @@
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.2.0",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^9.0.1",
     "ws": "^8.18.0",
     "zod": "^3.24.1"
   },
