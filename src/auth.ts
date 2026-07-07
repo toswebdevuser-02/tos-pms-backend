@@ -168,8 +168,8 @@ export function buildAuthRouter(): Router {
       const passwordHash = await bcrypt.hash(password, 10)
       await prisma.user.upsert({
         where: { email },
-        create: { email, passwordHash, role: member.role, memberId, mustReset: true },
-        update: { passwordHash, role: member.role, memberId, mustReset: true }
+        create: { email, passwordHash, role: member.role, memberId, mustReset: false },
+        update: { passwordHash, role: member.role, memberId, mustReset: false }
       })
       res.json({ ok: true, data: { email } })
     } catch (e) {
