@@ -176,9 +176,9 @@ function buildRouter() {
         const { name, client, location, discipline, type, quoted_hours, start_date, end_date, client_id } = req.body;
         send(res, async () => {
             const id = await store.projectCreate(name, client, location, discipline, String(quoted_hours ?? ''), String(start_date ?? ''), String(end_date ?? ''), actorOf(req), String(type ?? ''), client_id == null ? null : Number(client_id));
-            // Auto-assign the creator so they can see/manage the project they just made.
-            // (Team Lead and above already see all projects; this matters for Project Leads.)
-            if (req.user?.mid && (0, auth_1.rankOf)(req.user.role) < (0, auth_1.rankOf)('Team Lead')) {
+            // Auto-assign the creator so scoped dashboards keep showing the project
+            // even when their local discipline/profile data is incomplete.
+            if (req.user?.mid) {
                 try {
                     await store.projectMemberAssign(id, req.user.mid);
                 }

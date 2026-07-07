@@ -22,6 +22,7 @@ export interface AuthUser {
   role: string
   name: string
   email: string
+  discipline?: string
 }
 
 // Augment Express Request with the authenticated user.
@@ -80,7 +81,8 @@ export async function authRequired(req: Request, res: Response, next: NextFuncti
       mid: user.memberId,
       role: user.member?.role ?? user.role,
       name: user.member?.name ?? decoded.name ?? decoded.email,
-      email: decoded.email
+      email: decoded.email,
+      discipline: user.member?.discipline ?? ''
     }
     next()
   } catch {
@@ -115,7 +117,8 @@ export function buildAuthRouter(): Router {
       // UI). user.role can lag behind, so authorize by the member's role.
       const authUser: AuthUser = {
         uid: user.id, mid: user.memberId, role: user.member?.role ?? user.role,
-        name: user.member?.name ?? email, email
+        name: user.member?.name ?? email, email,
+        discipline: user.member?.discipline ?? ''
       }
       res.json({ ok: true, data: { token: sign(authUser), user: authUser, mustReset: user.mustReset } })
     } catch (e) {
