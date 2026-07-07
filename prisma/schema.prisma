@@ -65,8 +65,8 @@ model User {
   mustReset    Boolean  @default(true) @map("must_reset")
   createdAt    DateTime @default(now()) @map("created_at")
 
-  memberId Int?    @unique @map("member_id")
-  member   Member? @relation(fields: [memberId], references: [id], onDelete: SetNull)
+  memberId Int    @unique @map("member_id")
+  member   Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
 
   @@map("users")
 }
