@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.buildDigestRows = buildDigestRows;
 exports.runDigestTick = runDigestTick;
@@ -10,7 +43,10 @@ exports.runDigestTick = runDigestTick;
  * (src/renderer/src/risk.ts and report.ts) so manual and automatic digests
  * match. Rows are built directly from the DB via the store.
  */
-const store_1 = require("./store");
+const projectService = __importStar(require("./service/projectService"));
+const statusService = __importStar(require("./service/statusService"));
+const itemService = __importStar(require("./service/itemService"));
+const settingsService = __importStar(require("./service/settingsService"));
 const email_1 = require("./email");
 const num = (v) => { const n = parseFloat(String(v ?? '')); return isNaN(n) ? 0 : n; };
 const productiveOf = (r) => num(r.execution_hrs) + num(r.overtime_hrs);
@@ -113,8 +149,8 @@ function buildDigestHtml(rows) {
 }
 // ── Build rows from the DB ────────────────────────────────────────────────────
 async function buildDigestRows() {
-    const projects = await (0, store_1.projectsGetAll)();
-    const statuses = await (0, store_1.statusesGetAll)();
+    const projects = await projectService.getAll();
+    const statuses = await statusService.getAll();
     const stageByPid = new Map();
     statuses.forEach((s) => { if (s.overall)
         stageByPid.set(Number(s.project_id), String(s.overall)); });
@@ -122,8 +158,8 @@ async function buildDigestRows() {
     for (const p of projects) {
         const pid = Number(p.id);
         const [tasks, ts, rfis, queries] = await Promise.all([
-            (0, store_1.itemsGetByProject)(pid, 'task'), (0, store_1.itemsGetByProject)(pid, 'timesheet'),
-            (0, store_1.itemsGetByProject)(pid, 'rfi'), (0, store_1.itemsGetByProject)(pid, 'query')
+            itemService.getByProject(pid, 'task'), itemService.getByProject(pid, 'timesheet'),
+            itemService.getByProject(pid, 'rfi'), itemService.getByProject(pid, 'query')
         ]);
         const stage = stageByPid.get(pid) ?? 'On-going';
         if (normStage(stage) === 'Completed')
@@ -144,7 +180,7 @@ async function buildDigestRows() {
 /** Called on a timer; sends the digest when the configured schedule is due. */
 async function runDigestTick() {
     try {
-        const settings = await (0, store_1.getSettings)();
+        const settings = await settingsService.get();
         const d = (settings.digest ?? {});
         if (!d.enabled)
             return;
@@ -168,7 +204,7 @@ async function runDigestTick() {
             if (r.ok)
                 sent++;
         }
-        await (0, store_1.updateSettings)({ digest: { ...d, lastSent: todayStr } });
+        await settingsService.update({ digest: { ...d, lastSent: todayStr } });
         // eslint-disable-next-line no-console
         console.log(`[digest] sent to ${sent}/${recipients.length} recipient(s)`);
     }

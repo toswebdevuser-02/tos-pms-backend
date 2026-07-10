@@ -15,6 +15,8 @@ import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import { prisma } from './prisma'
 import { env } from './env'
+import { getCachedJson, invalidateByPrefix } from './redis'
+
 
 export interface AuthUser {
   uid: number
@@ -53,44 +55,115 @@ function sign(u: AuthUser): string {
 }
 
 export async function authRequired(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const reqAny = req as any
+  reqAny.perf = reqAny.perf ?? { tTotalStart: performance.now(), tAuthStart: undefined, tDbMs: 0 }
+
+  const logAuth = (status: 'ok' | 'fail', extraError?: string) => {
+    const p = reqAny.perf
+    const headerMs = typeof p.tAuthHeaderMs === 'number' ? p.tAuthHeaderMs : 0
+    const jwtMs = typeof p.tAuthJwtMs === 'number' ? p.tAuthJwtMs : 0
+    const userQueryMs = typeof p.tAuthUserQueryMs === 'number' ? p.tAuthUserQueryMs : 0
+    const buildUserMs = typeof p.tAuthBuildUserMs === 'number' ? p.tAuthBuildUserMs : 0
+    const verifyTotalMs = typeof p.tAuthVerifyTotalMs === 'number' ? p.tAuthVerifyTotalMs : 0
+
+    console.log(
+      `[auth-perf] ${req.method} ${req.originalUrl}`,
+      `| status=${status}`,
+      `| Header=${headerMs.toFixed(1)}ms`,
+      `| JWT Verify=${jwtMs.toFixed(1)}ms`,
+      `| User Query=${userQueryMs.toFixed(1)}ms`,
+      `| Build User=${buildUserMs.toFixed(1)}ms`,
+      `| Verify Total=${verifyTotalMs.toFixed(1)}ms`,
+      extraError ? `| Error=${extraError}` : ''
+    )
+  }
+
+  const tVerifyStart = performance.now()
+
+  // 1) Read Authorization header + parse token
+  const tHeaderStart = performance.now()
   const header = req.header('authorization') ?? ''
   const token = header.startsWith('Bearer ') ? header.slice(7) : ''
+  reqAny.perf.tAuthHeaderMs = performance.now() - tHeaderStart
+
   if (!token) {
+    reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart
+    logAuth('fail', 'Not authenticated (no bearer token)')
     res.status(401).json({ ok: false, error: 'Not authenticated' })
     return
   }
+
+  // 2) JWT verify
+  const tJwtStart = performance.now()
   let decoded: AuthUser
   try {
     decoded = jwt.verify(token, env.jwtSecret) as AuthUser
-  } catch {
+  } catch (e) {
+    reqAny.perf.tAuthJwtMs = performance.now() - tJwtStart
+    reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart
+    logAuth('fail', 'Session expired')
     res.status(401).json({ ok: false, error: 'Session expired — please sign in again' })
     return
   }
-  // Re-read identity + role from the DB on every request so a role/discipline
-  // change (made in the Members list) takes effect on the next page load — no
-  // re-login required. The token is only used to identify the user, not to
-  // carry their (possibly stale) role.
+  reqAny.perf.tAuthJwtMs = performance.now() - tJwtStart
+
+  // 3) prisma.user.findUnique (cache-first)
+  const tUserQueryStart = performance.now()
+  let user: (typeof decoded) | (any)
   try {
-    const user = await prisma.user.findUnique({ where: { id: decoded.uid }, include: { member: true } })
-    if (!user) {
-      res.status(401).json({ ok: false, error: 'Account no longer exists' })
-      return
-    }
-    req.user = {
-      uid: user.id,
-      mid: user.memberId,
-      role: user.member?.role ?? user.role,
-      name: user.member?.name ?? decoded.name ?? decoded.email,
-      email: decoded.email,
-      discipline: user.member?.discipline ?? ''
-    }
-    next()
-  } catch {
+    user = await getCachedJson(
+      `authUser:${decoded.uid}`,
+      300,
+      () => prisma.user.findUnique({ where: { id: decoded.uid }, include: { member: true } }) as any
+    )
+  } catch (e) {
+    reqAny.perf.tAuthUserQueryMs = performance.now() - tUserQueryStart
+    reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart
+    logAuth('fail', 'Authentication lookup failed')
     res.status(500).json({ ok: false, error: 'Authentication lookup failed' })
+    return
   }
+  reqAny.perf.tAuthUserQueryMs = performance.now() - tUserQueryStart
+
+
+  if (!user) {
+    reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart
+    logAuth('fail', 'Account no longer exists')
+    res.status(401).json({ ok: false, error: 'Account no longer exists' })
+    return
+  }
+
+
+  // 4) Build req.user object
+  const tBuildStart = performance.now()
+  req.user = {
+    uid: (user as any).id,
+    mid: (user as any).memberId,
+    role: (user as any).member?.role ?? (user as any).role,
+    name: (user as any).member?.name ?? decoded.name ?? decoded.email,
+    email: decoded.email,
+    discipline: (user as any).member?.discipline ?? ''
+  }
+  reqAny.perf.tAuthBuildUserMs = performance.now() - tBuildStart
+
+  // 5) Verify Total
+  reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart
+  reqAny.perf.tAuthEnd = performance.now()
+  logAuth('ok')
+  next()
+}
+
+export async function invalidateAuthCache(uid: number): Promise<void> {
+  await invalidateByPrefix(`authUser:${uid}`)
+}
+
+export async function invalidateAuthCacheForMember(memberId: number): Promise<void> {
+  const u = await prisma.user.findFirst({ where: { memberId }, select: { id: true } })
+  if (u?.id) await invalidateAuthCache(u.id)
 }
 
 // Gate a route to one of the given roles (or higher rank).
+
 export function requireRole(min: 'Admin' | 'Company Admin') {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user || rankOf(req.user.role) < rankOf(min)) {
@@ -144,6 +217,7 @@ export function buildAuthRouter(): Router {
         return
       }
       await prisma.user.update({ where: { id: user.id }, data: { passwordHash: await bcrypt.hash(next, 10), mustReset: false } })
+      await invalidateAuthCache(user.id)
       res.json({ ok: true, data: {} })
     } catch (e) {
       res.status(400).json({ ok: false, error: String(e) })
@@ -166,11 +240,12 @@ export function buildAuthRouter(): Router {
       }
       const email = member.email.trim().toLowerCase()
       const passwordHash = await bcrypt.hash(password, 10)
-      await prisma.user.upsert({
+      const upserted = await prisma.user.upsert({
         where: { email },
         create: { email, passwordHash, role: member.role, memberId, mustReset: false },
         update: { passwordHash, role: member.role, memberId, mustReset: false }
       })
+      await invalidateAuthCache(upserted.id)
       res.json({ ok: true, data: { email } })
     } catch (e) {
       res.status(400).json({ ok: false, error: String(e) })

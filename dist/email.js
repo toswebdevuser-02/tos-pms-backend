@@ -11,9 +11,9 @@ exports.emailSend = emailSend;
  * is built fresh per call so a settings change takes effect immediately.
  */
 const nodemailer_1 = __importDefault(require("nodemailer"));
-const store_1 = require("./store");
+const settingsService_1 = require("./service/settingsService");
 async function smtpConfig() {
-    const s = (await (0, store_1.getSettings)()).smtp;
+    const s = (await (0, settingsService_1.get)()).smtp;
     return s;
 }
 async function makeTransport() {

@@ -4,12 +4,12 @@
  * is built fresh per call so a settings change takes effect immediately.
  */
 import nodemailer, { Transporter } from 'nodemailer'
-import { getSettings } from './store'
+import { get } from './service/settingsService'
 
 interface Smtp { host: string; port: number; secure: boolean; user: string; pass: string; from: string }
 
 async function smtpConfig(): Promise<Smtp> {
-  const s = (await getSettings()).smtp as unknown as Smtp
+  const s = (await get()).smtp as unknown as Smtp
   return s
 }
 

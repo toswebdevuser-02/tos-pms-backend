@@ -8,17 +8,56 @@ import { buildRouter } from './routes'
 import { buildAuthRouter, authRequired } from './auth'
 import { initWebSocket } from './ws'
 import { runDigestTick } from './digest'
-import { projectsPurgeExpired } from './store'
+import { purgeExpired as projectsPurgeExpired } from './service/projectService'
+import { initRedis } from './redis'
+
+function newReqId(): string {
+  return Math.random().toString(16).slice(2) + Date.now().toString(16)
+}
+
 
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '5mb' }))
 
 // Lightweight request log so we can see client traffic during development.
-app.use((req, _res, next) => {
+app.use((req, res, next) => {
   if (req.path !== '/health') console.log(`${new Date().toISOString().substring(11, 19)} ${req.method} ${req.originalUrl}`)
+
+  // Request perf context (Auth / DB / Total)
+  const reqAny = req as any
+  reqAny.perf = {
+    reqId: newReqId(),
+    tTotalStart: performance.now(),
+    tAuthStart: undefined as number | undefined,
+    tDbMs: 0,
+  }
+
+  // Expose active request to Prisma middleware.
+  ;(global as any).__activeReq = reqAny
+
+  res.on('finish', () => {
+    const p = (reqAny.perf ?? {}) as any
+    const totalMs = performance.now() - (p.tTotalStart ?? performance.now())
+    const authMs = typeof p.tAuthStart === 'number' && typeof p.tAuthEnd === 'number'
+      ? p.tAuthEnd - p.tAuthStart
+      : undefined
+    console.log(
+      `[perf] ${req.method} ${req.originalUrl}`,
+      `| reqId=${p.reqId ?? 'n/a'}`,
+      `| Total=${totalMs.toFixed(1)}ms`,
+      authMs != null ? `| Auth=${authMs.toFixed(1)}ms` : '',
+      `| DB=${(p.tDbMs ?? 0).toFixed(1)}ms`
+    )
+
+    // Clear active req after response.
+    if ((global as any).__activeReq === reqAny) (global as any).__activeReq = undefined
+  })
+
+
   next()
 })
+
 
 // Ensure the attachment storage dir exists.
 fs.mkdirSync(env.storageDir, { recursive: true })
@@ -42,10 +81,22 @@ const server = http.createServer(app)
 // Real-time updates ride on the same server at /ws.
 initWebSocket(server)
 
-server.listen(env.port, () => {
-  // eslint-disable-next-line no-console
-  console.log(`Project Tracker server listening on http://0.0.0.0:${env.port}`)
-})
+// Connect Redis (fail-open): the app must boot even when Redis is down.
+;(async () => {
+  try {
+    await initRedis()
+    // eslint-disable-next-line no-console
+    console.log('[redis] connected')
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[redis] unavailable, continuing without Redis cache:', String(e))
+  }
+
+  server.listen(env.port, () => {
+    // eslint-disable-next-line no-console
+    console.log(`Project Tracker server listening on http://0.0.0.0:${env.port}`)
+  })
+})()
 
 // Scheduled weekly/daily digest: check every 15 minutes (plus once shortly
 // after startup). runDigestTick() self-guards on the configured schedule and a

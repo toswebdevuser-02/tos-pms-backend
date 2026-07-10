@@ -6,7 +6,10 @@
  * (src/renderer/src/risk.ts and report.ts) so manual and automatic digests
  * match. Rows are built directly from the DB via the store.
  */
-import { getSettings, updateSettings, projectsGetAll, statusesGetAll, itemsGetByProject } from './store'
+import * as projectService from './service/projectService'
+import * as statusService from './service/statusService'
+import * as itemService from './service/itemService'
+import * as settingsService from './service/settingsService'
 import { emailSend } from './email'
 
 type Row = Record<string, unknown>
@@ -104,26 +107,26 @@ function buildDigestHtml(rows: DigestRow[]): string {
 
 // ── Build rows from the DB ────────────────────────────────────────────────────
 export async function buildDigestRows(): Promise<DigestRow[]> {
-  const projects = await projectsGetAll()
-  const statuses = await statusesGetAll()
+  const projects = await projectService.getAll()
+  const statuses = await statusService.getAll()
   const stageByPid = new Map<number, string>()
-  statuses.forEach((s) => { if (s.overall) stageByPid.set(Number(s.project_id), String(s.overall)) })
+  statuses.forEach((s: any) => { if (s.overall) stageByPid.set(Number(s.project_id), String(s.overall)) })
 
   const rows: DigestRow[] = []
   for (const p of projects) {
     const pid = Number(p.id)
     const [tasks, ts, rfis, queries] = await Promise.all([
-      itemsGetByProject(pid, 'task'), itemsGetByProject(pid, 'timesheet'),
-      itemsGetByProject(pid, 'rfi'), itemsGetByProject(pid, 'query')
+      itemService.getByProject(pid, 'task'), itemService.getByProject(pid, 'timesheet'),
+      itemService.getByProject(pid, 'rfi'), itemService.getByProject(pid, 'query')
     ])
     const stage = stageByPid.get(pid) ?? 'On-going'
     if (normStage(stage) === 'Completed') continue // skip finished projects in the digest
-    const done = tasks.filter((t) => t.status === 'Done').length
+    const done = tasks.filter((t: any) => t.status === 'Done').length
     const taskPct = tasks.length ? Math.round((done / tasks.length) * 100) : 0
-    const logged = Math.round(ts.reduce((s, r) => s + productiveOf(r), 0) * 10) / 10
+    const logged = Math.round(ts.reduce((s: any, r: any) => s + productiveOf(r), 0) * 10) / 10
     const quoted = num(p.quoted_hours)
-    const openItems = rfis.filter((r) => r.status === 'Open' || r.status === 'Pending').length +
-                      queries.filter((q) => q.status === 'Open' || q.status === 'Pending').length
+    const openItems = rfis.filter((r: any) => r.status === 'Open' || r.status === 'Pending').length +
+                      queries.filter((q: any) => q.status === 'Open' || q.status === 'Pending').length
     const risk = assessRisk({ stage, endDate: String(p.end_date ?? ''), quotedHours: quoted, loggedHours: logged, tasks, timesheets: ts, openItems })
     rows.push({ name: String(p.name ?? ''), discipline: String(p.discipline ?? ''), stage, level: risk.level, reasons: risk.reasons, taskPct, logged, quoted })
   }
@@ -137,10 +140,10 @@ interface DigestConfig { enabled?: boolean; frequency?: 'weekly' | 'daily'; dayO
 /** Called on a timer; sends the digest when the configured schedule is due. */
 export async function runDigestTick(): Promise<void> {
   try {
-    const settings = await getSettings()
+    const settings = await settingsService.get()
     const d = (settings.digest ?? {}) as DigestConfig
     if (!d.enabled) return
-    const recipients = (d.recipients ?? []).map((r) => String(r).trim()).filter(Boolean)
+    const recipients = (d.recipients ?? []).map((r: any) => String(r).trim()).filter(Boolean)
     if (!recipients.length) return
     const now = new Date()
     const todayStr = now.toISOString().slice(0, 10)
@@ -153,7 +156,7 @@ export async function runDigestTick(): Promise<void> {
     const subject = `Weekly Project Digest — ${now.toLocaleDateString()}`
     let sent = 0
     for (const to of recipients) { const r = await emailSend({ to, subject, html }); if (r.ok) sent++ }
-    await updateSettings({ digest: { ...d, lastSent: todayStr } })
+    await settingsService.update({ digest: { ...d, lastSent: todayStr } })
     // eslint-disable-next-line no-console
     console.log(`[digest] sent to ${sent}/${recipients.length} recipient(s)`)
   } catch (e) {

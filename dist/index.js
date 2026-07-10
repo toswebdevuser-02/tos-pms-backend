@@ -13,14 +13,38 @@ const routes_1 = require("./routes");
 const auth_1 = require("./auth");
 const ws_1 = require("./ws");
 const digest_1 = require("./digest");
-const store_1 = require("./store");
+const projectService_1 = require("./service/projectService");
+const redis_1 = require("./redis");
+function newReqId() {
+    return Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
 const app = (0, express_1.default)();
 app.use((0, cors_1.default)());
 app.use(express_1.default.json({ limit: '5mb' }));
 // Lightweight request log so we can see client traffic during development.
-app.use((req, _res, next) => {
+app.use((req, res, next) => {
     if (req.path !== '/health')
         console.log(`${new Date().toISOString().substring(11, 19)} ${req.method} ${req.originalUrl}`);
+    // Request perf context (Auth / DB / Total)
+    const reqAny = req;
+    reqAny.perf = {
+        reqId: newReqId(),
+        tTotalStart: performance.now(),
+        tAuthStart: undefined,
+        tDbMs: 0,
+    };
+    global.__activeReq = reqAny;
+    res.on('finish', () => {
+        const p = (reqAny.perf ?? {});
+        const totalMs = performance.now() - (p.tTotalStart ?? performance.now());
+        const authMs = typeof p.tAuthStart === 'number' && typeof p.tAuthEnd === 'number'
+            ? p.tAuthEnd - p.tAuthStart
+            : undefined;
+        console.log(`[perf] ${req.method} ${req.originalUrl}`, `| reqId=${p.reqId ?? 'n/a'}`, `| Total=${totalMs.toFixed(1)}ms`, authMs != null ? `| Auth=${authMs.toFixed(1)}ms` : '', `| DB=${(p.tDbMs ?? 0).toFixed(1)}ms`);
+        // Clear active req after response.
+        if (global.__activeReq === reqAny)
+            global.__activeReq = undefined;
+    });
     next();
 });
 // Ensure the attachment storage dir exists.
@@ -41,10 +65,21 @@ app.use('/api', auth_1.authRequired, (0, routes_1.buildRouter)()); // everything
 const server = http_1.default.createServer(app);
 // Real-time updates ride on the same server at /ws.
 (0, ws_1.initWebSocket)(server);
-server.listen(env_1.env.port, () => {
-    // eslint-disable-next-line no-console
-    console.log(`Project Tracker server listening on http://0.0.0.0:${env_1.env.port}`);
-});
+(async () => {
+    try {
+        await (0, redis_1.initRedis)();
+        // eslint-disable-next-line no-console
+        console.log('[redis] connected');
+    }
+    catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[redis] unavailable, continuing without Redis cache:', String(e));
+    }
+    server.listen(env_1.env.port, () => {
+        // eslint-disable-next-line no-console
+        console.log(`Project Tracker server listening on http://0.0.0.0:${env_1.env.port}`);
+    });
+})();
 // Scheduled weekly/daily digest: check every 15 minutes (plus once shortly
 // after startup). runDigestTick() self-guards on the configured schedule and a
 // per-day "already sent" marker, so repeated checks are safe.
@@ -54,7 +89,7 @@ setTimeout(() => { void (0, digest_1.runDigestTick)(); }, 15000);
 // Hourly check (plus once shortly after startup).
 const purgeExpired = async () => {
     try {
-        const n = await (0, store_1.projectsPurgeExpired)(15);
+        const n = await (0, projectService_1.purgeExpired)(15);
         // eslint-disable-next-line no-console
         if (n > 0)
             console.log(`Recycle bin: purged ${n} expired project(s)`);

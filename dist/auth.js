@@ -5,6 +5,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.rankOf = rankOf;
 exports.authRequired = authRequired;
+exports.invalidateAuthCache = invalidateAuthCache;
+exports.invalidateAuthCacheForMember = invalidateAuthCacheForMember;
 exports.requireRole = requireRole;
 exports.buildAuthRouter = buildAuthRouter;
 /**
@@ -24,6 +26,7 @@ const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const prisma_1 = require("./prisma");
 const env_1 = require("./env");
+const redis_1 = require("./redis");
 // Tiers (high→low): Company Admin > Manager > Team Lead > Employee.
 // Legacy 'Admin' = Team Lead, 'Member' = Employee.
 const ROLE_RANK = {
@@ -40,43 +43,87 @@ function sign(u) {
     return jsonwebtoken_1.default.sign(u, env_1.env.jwtSecret, { expiresIn: env_1.env.jwtExpiresIn });
 }
 async function authRequired(req, res, next) {
+    const reqAny = req;
+    reqAny.perf = reqAny.perf ?? { tTotalStart: performance.now(), tAuthStart: undefined, tDbMs: 0 };
+    const logAuth = (status, extraError) => {
+        const p = reqAny.perf;
+        const headerMs = typeof p.tAuthHeaderMs === 'number' ? p.tAuthHeaderMs : 0;
+        const jwtMs = typeof p.tAuthJwtMs === 'number' ? p.tAuthJwtMs : 0;
+        const userQueryMs = typeof p.tAuthUserQueryMs === 'number' ? p.tAuthUserQueryMs : 0;
+        const buildUserMs = typeof p.tAuthBuildUserMs === 'number' ? p.tAuthBuildUserMs : 0;
+        const verifyTotalMs = typeof p.tAuthVerifyTotalMs === 'number' ? p.tAuthVerifyTotalMs : 0;
+        console.log(`[auth-perf] ${req.method} ${req.originalUrl}`, `| status=${status}`, `| Header=${headerMs.toFixed(1)}ms`, `| JWT Verify=${jwtMs.toFixed(1)}ms`, `| User Query=${userQueryMs.toFixed(1)}ms`, `| Build User=${buildUserMs.toFixed(1)}ms`, `| Verify Total=${verifyTotalMs.toFixed(1)}ms`, extraError ? `| Error=${extraError}` : '');
+    };
+    const tVerifyStart = performance.now();
+    // 1) Read Authorization header + parse token
+    const tHeaderStart = performance.now();
     const header = req.header('authorization') ?? '';
     const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+    reqAny.perf.tAuthHeaderMs = performance.now() - tHeaderStart;
     if (!token) {
+        reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart;
+        logAuth('fail', 'Not authenticated (no bearer token)');
         res.status(401).json({ ok: false, error: 'Not authenticated' });
         return;
     }
+    // 2) JWT verify
+    const tJwtStart = performance.now();
     let decoded;
     try {
         decoded = jsonwebtoken_1.default.verify(token, env_1.env.jwtSecret);
     }
-    catch {
+    catch (e) {
+        reqAny.perf.tAuthJwtMs = performance.now() - tJwtStart;
+        reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart;
+        logAuth('fail', 'Session expired');
         res.status(401).json({ ok: false, error: 'Session expired — please sign in again' });
         return;
     }
-    // Re-read identity + role from the DB on every request so a role/discipline
-    // change (made in the Members list) takes effect on the next page load — no
-    // re-login required. The token is only used to identify the user, not to
-    // carry their (possibly stale) role.
+    reqAny.perf.tAuthJwtMs = performance.now() - tJwtStart;
+    // 3) prisma.user.findUnique (cache-first)
+    const tUserQueryStart = performance.now();
+    let user;
     try {
-        const user = await prisma_1.prisma.user.findUnique({ where: { id: decoded.uid }, include: { member: true } });
-        if (!user) {
-            res.status(401).json({ ok: false, error: 'Account no longer exists' });
-            return;
-        }
-        req.user = {
-            uid: user.id,
-            mid: user.memberId,
-            role: user.member?.role ?? user.role,
-            name: user.member?.name ?? decoded.name ?? decoded.email,
-            email: decoded.email,
-            discipline: user.member?.discipline ?? ''
-        };
-        next();
+        user = await (0, redis_1.getCachedJson)(`authUser:${decoded.uid}`, 300, () => prisma_1.prisma.user.findUnique({ where: { id: decoded.uid }, include: { member: true } }));
     }
-    catch {
+    catch (e) {
+        reqAny.perf.tAuthUserQueryMs = performance.now() - tUserQueryStart;
+        reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart;
+        logAuth('fail', 'Authentication lookup failed');
         res.status(500).json({ ok: false, error: 'Authentication lookup failed' });
+        return;
     }
+    reqAny.perf.tAuthUserQueryMs = performance.now() - tUserQueryStart;
+    if (!user) {
+        reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart;
+        logAuth('fail', 'Account no longer exists');
+        res.status(401).json({ ok: false, error: 'Account no longer exists' });
+        return;
+    }
+    // 4) Build req.user object
+    const tBuildStart = performance.now();
+    req.user = {
+        uid: user.id,
+        mid: user.memberId,
+        role: user.member?.role ?? user.role,
+        name: user.member?.name ?? decoded.name ?? decoded.email,
+        email: decoded.email,
+        discipline: user.member?.discipline ?? ''
+    };
+    reqAny.perf.tAuthBuildUserMs = performance.now() - tBuildStart;
+    // 5) Verify Total
+    reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart;
+    reqAny.perf.tAuthEnd = performance.now();
+    logAuth('ok');
+    next();
+}
+async function invalidateAuthCache(uid) {
+    await (0, redis_1.invalidateByPrefix)(`authUser:${uid}`);
+}
+async function invalidateAuthCacheForMember(memberId) {
+    const u = await prisma_1.prisma.user.findFirst({ where: { memberId }, select: { id: true } });
+    if (u?.id)
+        await invalidateAuthCache(u.id);
 }
 // Gate a route to one of the given roles (or higher rank).
 function requireRole(min) {
@@ -129,6 +176,7 @@ function buildAuthRouter() {
                 return;
             }
             await prisma_1.prisma.user.update({ where: { id: user.id }, data: { passwordHash: await bcryptjs_1.default.hash(next, 10), mustReset: false } });
+            await invalidateAuthCache(user.id);
             res.json({ ok: true, data: {} });
         }
         catch (e) {
@@ -151,11 +199,12 @@ function buildAuthRouter() {
             }
             const email = member.email.trim().toLowerCase();
             const passwordHash = await bcryptjs_1.default.hash(password, 10);
-            await prisma_1.prisma.user.upsert({
+            const upserted = await prisma_1.prisma.user.upsert({
                 where: { email },
-                create: { email, passwordHash, role: member.role, memberId, mustReset: true },
-                update: { passwordHash, role: member.role, memberId, mustReset: true }
+                create: { email, passwordHash, role: member.role, memberId, mustReset: false },
+                update: { passwordHash, role: member.role, memberId, mustReset: false }
             });
+            await invalidateAuthCache(upserted.id);
             res.json({ ok: true, data: { email } });
         }
         catch (e) {
