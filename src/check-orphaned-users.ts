@@ -6,7 +6,7 @@ import { prisma } from './prisma'
 async function main(): Promise<void> {
   // Find users with NULL memberId
   const orphaned = await prisma.user.findMany({
-    where: { memberId: null },
+    where: { memberId: { equals: undefined } },
     select: { id: true, email: true, role: true, memberId: true }
   })
 
