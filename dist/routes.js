@@ -152,6 +152,12 @@ function buildRouter() {
     r.get('/projects', (_req, res) => send(res, () => (0, redis_1.getCachedJson)('projects:all', 60, () => projectService.getAll())));
     r.get('/projects/deleted', projectGuard, (_req, res) => send(res, () => projectService.getDeleted()));
     r.get('/projects/:id', (req, res) => send(res, () => projectService.getById(int(req.params.id))));
+    // Project meta counts for dashboard/sidebars.
+    r.get('/projects/:id/counts', (req, res) => {
+        const projectId = int(req.params.id);
+        const cacheKey = `projectCounts:${projectId}`;
+        send(res, () => (0, redis_1.getCachedJson)(cacheKey, 30, () => itemService.getCountsByProject(projectId)));
+    });
     r.post('/projects', projectGuard, (req, res) => {
         const { name, client, location, discipline, type, quoted_hours, start_date, end_date, client_id } = req.body;
         send(res, async () => {
