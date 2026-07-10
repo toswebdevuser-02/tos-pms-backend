@@ -40,6 +40,8 @@ async function invalidateEventCaches(event: ChangeEvent): Promise<void> {
   if (event.entity === 'item' && event.type) {
     if (event.projectId != null && !Number.isNaN(event.projectId)) {
       await invalidateByPrefix(`items:${event.type}:${event.projectId}`)
+      // Counts cache used by ProjectDetail tabs.
+      await invalidateByPrefix(`items:counts:${event.projectId}`)
     }
     await invalidateByPrefix(`items:${event.type}:`)
     const allKey = ITEM_ALL_CACHE_KEY[event.type]
@@ -47,9 +49,15 @@ async function invalidateEventCaches(event: ChangeEvent): Promise<void> {
     return
   }
 
+  if (event.entity === 'status' && event.projectId != null && !Number.isNaN(event.projectId)) {
+    // Status affects counts shown on dashboards.
+    await invalidateByPrefix(`items:counts:${event.projectId}`)
+  }
+
   const prefix = CACHE_PREFIX[event.entity]
   if (prefix) await invalidateByPrefix(prefix)
 }
+
 
 let wss: WebSocketServer | null = null
 let heartbeat: NodeJS.Timeout | null = null
