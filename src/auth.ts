@@ -219,19 +219,19 @@ export function buildAuthRouter(): Router {
   r.post('/refresh', async (req, res) => {
     try {
       const token = req.cookies?.refreshToken
-      if (!token) { res.status(401).json({ ok: false, error: 'No refresh token' }); return }
+      if (!token) { res.status(200).json({ ok: false, error: 'No refresh token' }); return }
 
       let decoded: { uid: number }
       try {
         decoded = jwt.verify(token, env.refreshSecret) as { uid: number }
       } catch {
         res.clearCookie('refreshToken', { path: '/auth' })
-        res.status(401).json({ ok: false, error: 'Refresh token invalid or expired' })
+        res.status(200).json({ ok: false, error: 'Refresh token invalid or expired' })
         return
       }
 
       const user = await prisma.user.findUnique({ where: { id: decoded.uid }, include: { member: true } })
-      if (!user) { res.status(401).json({ ok: false, error: 'User not found' }); return }
+      if (!user) { res.status(200).json({ ok: false, error: 'User not found' }); return }
 
       const authUser: AuthUser = {
         uid: user.id, mid: user.memberId, role: user.member?.role ?? user.role,
