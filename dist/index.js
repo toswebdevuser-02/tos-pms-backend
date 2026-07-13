@@ -21,6 +21,13 @@ function newReqId() {
 const app = (0, express_1.default)();
 app.use((0, cors_1.default)());
 app.use(express_1.default.json({ limit: '5mb' }));
+// Prevent browsers from caching API responses. Without this, browsers may serve
+// stale data after a WebSocket-triggered refetch, breaking real-time updates.
+app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    next();
+});
 // Lightweight request log so we can see client traffic during development.
 app.use((req, res, next) => {
     if (req.path !== '/health')

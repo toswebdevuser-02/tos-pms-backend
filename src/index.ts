@@ -20,6 +20,14 @@ const app = express()
 app.use(cors())
 app.use(express.json({ limit: '5mb' }))
 
+// Prevent browsers from caching API responses. Without this, browsers may serve
+// stale data after a WebSocket-triggered refetch, breaking real-time updates.
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+  res.setHeader('Pragma', 'no-cache')
+  next()
+})
+
 // Lightweight request log so we can see client traffic during development.
 app.use((req, res, next) => {
   if (req.path !== '/health') console.log(`${new Date().toISOString().substring(11, 19)} ${req.method} ${req.originalUrl}`)

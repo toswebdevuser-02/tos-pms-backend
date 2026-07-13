@@ -131,7 +131,13 @@ export async function update(
 ): Promise<void> {
   await itemRepository.update(type, id, fields, actor)
 
-  const projectId = Number(fields.project_id)
+  let projectId = Number(fields.project_id)
+  if (Number.isNaN(projectId) || !projectId) {
+    const fetchedId = await getProjectId(type, id)
+    if (fetchedId !== undefined) {
+      projectId = fetchedId
+    }
+  }
 
   await broadcast({
     entity: 'item',
@@ -146,6 +152,10 @@ export async function delete_(
   id: number,
   projectId?: number,
 ): Promise<void> {
+  if (projectId === undefined) {
+    projectId = await getProjectId(type, id)
+  }
+
   await itemRepository.delete_(type, id)
 
   await broadcast({
