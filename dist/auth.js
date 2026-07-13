@@ -39,8 +39,12 @@ const ROLE_RANK = {
 function rankOf(role) {
     return ROLE_RANK[role] ?? 0;
 }
-function sign(u) {
-    return jsonwebtoken_1.default.sign(u, env_1.env.jwtSecret, { expiresIn: env_1.env.jwtExpiresIn });
+function signAccessToken(u) {
+    return jsonwebtoken_1.default.sign(u, env_1.env.jwtSecret, { expiresIn: env_1.env.accessTokenExpiresIn });
+}
+function signRefreshToken(u) {
+    // Minimal payload — just enough to re-issue an access token.
+    return jsonwebtoken_1.default.sign({ uid: u.uid }, env_1.env.refreshSecret, { expiresIn: env_1.env.refreshTokenExpiresIn });
 }
 async function authRequired(req, res, next) {
     const reqAny = req;
@@ -146,18 +150,73 @@ function buildAuthRouter() {
                 res.status(401).json({ ok: false, error: 'Invalid email or password' });
                 return;
             }
-            // The member record's role is the source of truth (managed in the members
-            // UI). user.role can lag behind, so authorize by the member's role.
             const authUser = {
                 uid: user.id, mid: user.memberId, role: user.member?.role ?? user.role,
                 name: user.member?.name ?? email, email,
                 discipline: user.member?.discipline ?? ''
             };
-            res.json({ ok: true, data: { token: sign(authUser), user: authUser, mustReset: user.mustReset } });
+            const refreshToken = signRefreshToken(authUser);
+            res.cookie('refreshToken', refreshToken, {
+                httpOnly: true,
+                secure: process.env.NODE_ENV === 'production', // true once served over HTTPS
+                sameSite: 'strict',
+                maxAge: 30 * 24 * 60 * 60 * 1000, // 30d, matches refreshTokenExpiresIn
+                path: '/auth' // scope the cookie to auth endpoints only
+            });
+            res.json({
+                ok: true,
+                data: { token: signAccessToken(authUser), user: authUser, mustReset: user.mustReset }
+                // NOTE: no refresh token in the JSON body — it only ever lives in the cookie.
+            });
         }
         catch (e) {
             res.status(400).json({ ok: false, error: String(e) });
         }
+    });
+    r.post('/refresh', async (req, res) => {
+        try {
+            const token = req.cookies?.refreshToken;
+            if (!token) {
+                res.status(200).json({ ok: false, error: 'No refresh token' });
+                return;
+            }
+            let decoded;
+            try {
+                decoded = jsonwebtoken_1.default.verify(token, env_1.env.refreshSecret);
+            }
+            catch {
+                res.clearCookie('refreshToken', { path: '/auth' });
+                res.status(200).json({ ok: false, error: 'Refresh token invalid or expired' });
+                return;
+            }
+            const user = await prisma_1.prisma.user.findUnique({ where: { id: decoded.uid }, include: { member: true } });
+            if (!user) {
+                res.status(200).json({ ok: false, error: 'User not found' });
+                return;
+            }
+            const authUser = {
+                uid: user.id, mid: user.memberId, role: user.member?.role ?? user.role,
+                name: user.member?.name ?? user.email, email: user.email,
+                discipline: user.member?.discipline ?? ''
+            };
+            // Rotate the refresh token on every use — limits replay if one is ever stolen.
+            const newRefreshToken = signRefreshToken(authUser);
+            res.cookie('refreshToken', newRefreshToken, {
+                httpOnly: true,
+                secure: process.env.NODE_ENV === 'production',
+                sameSite: 'strict',
+                maxAge: 30 * 24 * 60 * 60 * 1000,
+                path: '/auth'
+            });
+            res.json({ ok: true, data: { token: signAccessToken(authUser) } });
+        }
+        catch (e) {
+            res.status(400).json({ ok: false, error: String(e) });
+        }
+    });
+    r.post('/logout', (req, res) => {
+        res.clearCookie('refreshToken', { path: '/auth' });
+        res.json({ ok: true, data: {} });
     });
     r.get('/me', authRequired, (req, res) => {
         res.json({ ok: true, data: { user: req.user } });
