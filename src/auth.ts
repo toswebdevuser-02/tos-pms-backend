@@ -50,8 +50,13 @@ export function rankOf(role: string): number {
   return ROLE_RANK[role] ?? 0
 }
 
-function sign(u: AuthUser): string {
-  return jwt.sign(u, env.jwtSecret, { expiresIn: env.jwtExpiresIn as jwt.SignOptions['expiresIn'] })
+function signAccessToken(u: AuthUser): string {
+  return jwt.sign(u, env.jwtSecret, { expiresIn: env.accessTokenExpiresIn as jwt.SignOptions['expiresIn'] })
+}
+
+function signRefreshToken(u: AuthUser): string {
+  // Minimal payload — just enough to re-issue an access token.
+  return jwt.sign({ uid: u.uid }, env.refreshSecret, { expiresIn: env.refreshTokenExpiresIn as jwt.SignOptions['expiresIn'] })
 }
 
 export async function authRequired(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -186,17 +191,73 @@ export function buildAuthRouter(): Router {
         res.status(401).json({ ok: false, error: 'Invalid email or password' })
         return
       }
-      // The member record's role is the source of truth (managed in the members
-      // UI). user.role can lag behind, so authorize by the member's role.
       const authUser: AuthUser = {
         uid: user.id, mid: user.memberId, role: user.member?.role ?? user.role,
         name: user.member?.name ?? email, email,
         discipline: user.member?.discipline ?? ''
       }
-      res.json({ ok: true, data: { token: sign(authUser), user: authUser, mustReset: user.mustReset } })
+
+      const refreshToken = signRefreshToken(authUser)
+      res.cookie('refreshToken', refreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production', // true once served over HTTPS
+        sameSite: 'strict',
+        maxAge: 30 * 24 * 60 * 60 * 1000, // 30d, matches refreshTokenExpiresIn
+        path: '/auth' // scope the cookie to auth endpoints only
+      })
+
+      res.json({
+        ok: true,
+        data: { token: signAccessToken(authUser), user: authUser, mustReset: user.mustReset }
+        // NOTE: no refresh token in the JSON body — it only ever lives in the cookie.
+      })
     } catch (e) {
       res.status(400).json({ ok: false, error: String(e) })
     }
+  })
+
+  r.post('/refresh', async (req, res) => {
+    try {
+      const token = req.cookies?.refreshToken
+      if (!token) { res.status(401).json({ ok: false, error: 'No refresh token' }); return }
+
+      let decoded: { uid: number }
+      try {
+        decoded = jwt.verify(token, env.refreshSecret) as { uid: number }
+      } catch {
+        res.clearCookie('refreshToken', { path: '/auth' })
+        res.status(401).json({ ok: false, error: 'Refresh token invalid or expired' })
+        return
+      }
+
+      const user = await prisma.user.findUnique({ where: { id: decoded.uid }, include: { member: true } })
+      if (!user) { res.status(401).json({ ok: false, error: 'User not found' }); return }
+
+      const authUser: AuthUser = {
+        uid: user.id, mid: user.memberId, role: user.member?.role ?? user.role,
+        name: user.member?.name ?? user.email, email: user.email,
+        discipline: user.member?.discipline ?? ''
+      }
+
+      // Rotate the refresh token on every use — limits replay if one is ever stolen.
+      const newRefreshToken = signRefreshToken(authUser)
+      res.cookie('refreshToken', newRefreshToken, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 30 * 24 * 60 * 60 * 1000,
+        path: '/auth'
+      })
+
+      res.json({ ok: true, data: { token: signAccessToken(authUser) } })
+    } catch (e) {
+      res.status(400).json({ ok: false, error: String(e) })
+    }
+  })
+
+  r.post('/logout', (req, res) => {
+    res.clearCookie('refreshToken', { path: '/auth' })
+    res.json({ ok: true, data: {} })
   })
 
   r.get('/me', authRequired, (req, res) => {
