@@ -20,7 +20,7 @@ function newReqId(): string {
 const app = express()
 
 const allowedOrigins = process.env.FRONTEND_URL 
-  ? process.env.FRONTEND_URL.split(',').map(s => s.trim())
+  ? process.env.FRONTEND_URL.split(',').map(s => s.trim().replace(/\/$/, ''))
   : ['http://localhost:5173'];
 
 app.use(cors({
