@@ -201,7 +201,7 @@ export function buildAuthRouter(): Router {
       res.cookie('refreshToken', refreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production', // true once served over HTTPS
-        sameSite: 'strict',
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
         maxAge: 30 * 24 * 60 * 60 * 1000, // 30d, matches refreshTokenExpiresIn
         path: '/auth' // scope the cookie to auth endpoints only
       })
@@ -244,7 +244,7 @@ export function buildAuthRouter(): Router {
       res.cookie('refreshToken', newRefreshToken, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
-        sameSite: 'strict',
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'strict',
         maxAge: 30 * 24 * 60 * 60 * 1000,
         path: '/auth'
       })

@@ -18,7 +18,23 @@ function newReqId(): string {
 
 
 const app = express()
-app.use(cors({ origin: process.env.FRONTEND_URL || 'http://localhost:5173', credentials: true }))
+
+const allowedOrigins = process.env.FRONTEND_URL 
+  ? process.env.FRONTEND_URL.split(',').map(s => s.trim())
+  : ['http://localhost:5173'];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin || allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}))
+
 app.use(cookieParser())
 app.use(express.json({ limit: '5mb' }))
 
