@@ -100,7 +100,7 @@ export async function getCachedJson<T>(
     await client!.setEx(key, ttlSec, JSON.stringify(fresh))
 
     return fresh
-  } catch (e) {
+  } catch {
     // Fail-open: Redis errors must never break API responses.
     console.log('[redis] ERROR (fail-open)', key)
     return fetcher()

@@ -42,7 +42,6 @@ async function main(): Promise<void> {
         password = formula
       } else {
         // User changed their own password — leave it alone; do NOT reset.
-        password = ''
         note = 'user changed their password — not in this list'
         changed.push(`${name} <${u.email}>`)
       }

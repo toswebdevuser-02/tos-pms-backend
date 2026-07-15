@@ -5,7 +5,7 @@
  */
 
 import * as projectRepository from '../repository/projectRepository'
-import { broadcast, ChangeEvent } from '../ws'
+import { broadcast } from '../ws'
 
 interface Row {
   [key: string]: any
@@ -214,7 +214,7 @@ export async function setArchived(id: number, archived: boolean, actor: string):
  * Note: Member assignment logic is in its own service.
  */
 
-export async function assignMember(projectId: number, memberId: number): Promise<void> {
+export async function assignMember(_projectId: number, _memberId: number): Promise<void> {
   // This will be delegated to memberService/projectMemberService
 }
 

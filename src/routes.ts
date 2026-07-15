@@ -115,9 +115,9 @@
 
 //   r.get('/projects/deleted', projectGuard, (_req, res) => send(res, () => projectService.getDeleted()))
 //   r.get('/projects/:id', (req, res) => send(res, () => projectService.getById(int(req.params.id))))
-  
 
-  
+
+
 //   // Project meta counts for dashboard/sidebars.
 //   r.get('/projects/:id/counts', (req, res) => {
 //     const projectId = int(req.params.id)
@@ -378,7 +378,7 @@
 //       fs.mkdirSync(absDir, { recursive: true })
 //       fs.writeFileSync(path.join(absDir, safeName), file.buffer)
 //       const storedPath = path.posix.join(entityType, String(entityId), safeName)
-      
+
 //       const rec = await attachmentService.add(entityType, entityId, file.originalname, storedPath)
 //       res.json({ ok: true, data: rec })
 //     } catch (e) {
@@ -422,7 +422,7 @@ import { env } from './env'
 import { requireRole, rankOf } from './auth'
 import { broadcast, ChangeEvent } from './ws'
 import { emailTest, emailSend } from './email'
-import { getCachedJson, invalidateByPrefix } from './redis'
+import { getCachedJson } from './redis'
 
 
 import * as projectService from './service/projectService'
@@ -814,12 +814,12 @@ export function buildRouter(): Router {
       const entityId = int(req.body.entityId)
       const file = req.file
       if (!file) return res.status(400).json({ ok: false, error: 'no file' })
-      const safeName = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${file.originalname.replace(/[^\w.\-]/g, '_')}`
+      const safeName = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${file.originalname.replace(/[^\w.-]/g, '_')}`
       const absDir = path.join(env.storageDir, entityType, String(entityId))
       fs.mkdirSync(absDir, { recursive: true })
       fs.writeFileSync(path.join(absDir, safeName), file.buffer)
       const storedPath = path.posix.join(entityType, String(entityId), safeName)
-      
+
       const rec = await attachmentService.add(entityType, entityId, file.originalname, storedPath)
       res.json({ ok: true, data: rec })
     } catch (e) {

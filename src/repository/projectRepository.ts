@@ -10,23 +10,23 @@ interface Row {
   [key: string]: any
 }
 
-interface ProjectRow {
-  id: number
-  name: string
-  client: string
-  location: string
-  discipline: string
-  type: string
-  quotedHours: number
-  startDate: string
-  endDate: string
-  createdBy: string
-  updatedBy: string
-  deletedAt?: Date | null
-  archived: boolean
-  version: number
-  clientId?: number | null
-}
+// interface ProjectRow {
+//   id: number
+//   name: string
+//   client: string
+//   location: string
+//   discipline: string
+//   type: string
+//   quotedHours: number
+//   startDate: string
+//   endDate: string
+//   createdBy: string
+//   updatedBy: string
+//   deletedAt?: Date | null
+//   archived: boolean
+//   version: number
+//   clientId?: number | null
+// }
 
 // Helper: flatten Prisma project to Row (legacy compatibility)
 function flatProject(p: any): Row {

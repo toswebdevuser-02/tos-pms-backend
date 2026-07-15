@@ -103,7 +103,7 @@ export async function authRequired(req: Request, res: Response, next: NextFuncti
   let decoded: AuthUser
   try {
     decoded = jwt.verify(token, env.jwtSecret) as AuthUser
-  } catch (e) {
+  } catch {
     reqAny.perf.tAuthJwtMs = performance.now() - tJwtStart
     reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart
     logAuth('fail', 'Session expired')
@@ -121,7 +121,7 @@ export async function authRequired(req: Request, res: Response, next: NextFuncti
       300,
       () => prisma.user.findUnique({ where: { id: decoded.uid }, include: { member: true } }) as any
     )
-  } catch (e) {
+  } catch {
     reqAny.perf.tAuthUserQueryMs = performance.now() - tUserQueryStart
     reqAny.perf.tAuthVerifyTotalMs = performance.now() - tVerifyStart
     logAuth('fail', 'Authentication lookup failed')
